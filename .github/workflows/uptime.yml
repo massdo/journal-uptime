@@ -1,0 +1,61 @@
+name: uptime
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      TARGET: https://journal.mcp-marketplace.org/mcp
+    steps:
+      - name: Sonder l'endpoint MCP
+        run: |
+          # Une requête sans en-tête Authorization doit recevoir 401. Ce code
+          # traverse toute la chaîne — DNS, TLS, bordure Cloudflare, tunnel,
+          # processus applicatif — sans qu'aucun jeton ne circule.
+          probe() {
+            curl -s -o /dev/null -w '%{http_code} %{time_total}' \
+              --max-time 10 \
+              -X POST "$TARGET" \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"uptime-probe","version":"1"}}}' \
+              || true
+          }
+
+          attempt() {
+            local label="$1" result code duration
+            result="$(probe)"
+            code="${result%% *}"
+            duration="${result##* }"
+            echo "$label : code=$code duree=${duration}s"
+            [ "$code" = "401" ]
+          }
+
+          if attempt "essai 1"; then
+            echo "OK — le service repond comme attendu"
+            exit 0
+          fi
+
+          # Une seconde tentative évite qu'un aléa réseau isolé déclenche une alerte.
+          echo "essai 1 en echec, nouvelle tentative dans 20 s"
+          sleep 20
+
+          if attempt "essai 2"; then
+            echo "OK apres reprise — echec isole, pas d'alerte"
+            exit 0
+          fi
+
+          echo "ECHEC — deux tentatives consecutives sans 401 attendu"
+          exit 1
